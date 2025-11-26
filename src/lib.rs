@@ -42,7 +42,7 @@ mod bencher;
 mod connection;
 #[cfg(feature = "csv_output")]
 mod csv_report;
-mod error;
+pub mod error;
 mod estimate;
 mod format;
 mod fs;
@@ -52,7 +52,7 @@ mod macros;
 pub mod measurement;
 mod plot;
 pub mod profiler;
-mod report;
+pub mod report;
 mod routine;
 mod stats;
 
@@ -345,10 +345,10 @@ pub enum BenchmarkFilter {
 ///   reported to stdout, stored in files, and plotted
 /// - **Comparison**: The current sample is compared with the sample obtained in the previous
 ///   benchmark.
-pub struct Criterion<M: Measurement = WallTime> {
+pub struct Criterion<M: Measurement = WallTime, R: Report = Reports> {
     config: BenchmarkConfig,
     filter: BenchmarkFilter,
-    report: Reports,
+    report: R,
     output_directory: PathBuf,
     baseline_directory: String,
     baseline: Baseline,
@@ -381,7 +381,8 @@ fn cargo_target_directory() -> Option<PathBuf> {
         })
 }
 
-impl Default for Criterion {
+impl <M: Measurement + Default, R: Report + Default> Default for Criterion<M, R>
+{
     /// Creates a benchmark manager with the following default settings:
     ///
     /// - Sample size: 100 measurements
@@ -393,17 +394,10 @@ impl Default for Criterion {
     /// - Significance level: 0.05
     /// - Plotting: enabled, using gnuplot if available or plotters if gnuplot is not available
     /// - No filter
-    fn default() -> Criterion {
-        let reports = Reports {
-            cli_enabled: true,
-            cli: CliReport::new(false, false, CliVerbosity::Normal),
-            bencher_enabled: false,
-            bencher: BencherReport,
-            html: default_plotting_backend().create_plotter().map(Html::new),
-            csv_enabled: cfg!(feature = "csv_output"),
-        };
+    fn default() -> Criterion<M, R> {
+        let reports = R::default();
 
-        let mut criterion = Criterion {
+        let mut criterion = Criterion::<M, R> {
             config: BenchmarkConfig {
                 confidence_level: 0.95,
                 measurement_time: Duration::from_secs(5),
@@ -423,29 +417,28 @@ impl Default for Criterion {
             output_directory: default_output_directory().clone(),
             all_directories: HashSet::new(),
             all_titles: HashSet::new(),
-            measurement: WallTime,
+            measurement: M::default(),
             profiler: Box::new(RefCell::new(ExternalProfiler)),
             connection: cargo_criterion_connection()
-                .as_ref()
-                .map(|mtx| mtx.lock().unwrap()),
+            .as_ref()
+            .map(|mtx| mtx.lock().unwrap()),
             mode: Mode::Benchmark,
         };
 
         if criterion.connection.is_some() {
             // disable all reports when connected to cargo-criterion; it will do the reporting.
-            criterion.report.cli_enabled = false;
-            criterion.report.bencher_enabled = false;
-            criterion.report.csv_enabled = false;
-            criterion.report.html = None;
+            criterion.report.disable();
         }
         criterion
     }
 }
 
-impl<M: Measurement> Criterion<M> {
+
+
+impl<M: Measurement, R: Report> Criterion<M, R> {
     /// Changes the measurement for the benchmarks run with this runner. See the
     /// [`Measurement`] trait for more details
-    pub fn with_measurement<M2: Measurement>(self, m: M2) -> Criterion<M2> {
+    pub fn with_measurement<M2: Measurement>(self, measurement: M2) -> Criterion<M2, R> {
         // Can't use struct update syntax here because they're technically different types.
         Criterion {
             config: self.config,
@@ -457,7 +450,29 @@ impl<M: Measurement> Criterion<M> {
             output_directory: self.output_directory,
             all_directories: self.all_directories,
             all_titles: self.all_titles,
-            measurement: m,
+            measurement,
+            profiler: self.profiler,
+            connection: self.connection,
+            mode: self.mode,
+        }
+    }
+
+    #[must_use]
+    /// Changes the report for the benchmarks run with this runner. See the
+    /// [`Report`] trait for more details
+    pub fn with_report<R2: Report>(self, report: R2) -> Criterion<M, R2> {
+        // Can't use struct update syntax here because they're technically different types.
+        Criterion {
+            config: self.config,
+            filter: self.filter,
+            report,
+            baseline_directory: self.baseline_directory,
+            baseline: self.baseline,
+            load_baseline: self.load_baseline,
+            output_directory: self.output_directory,
+            all_directories: self.all_directories,
+            all_titles: self.all_titles,
+            measurement: self.measurement,
             profiler: self.profiler,
             connection: self.connection,
             mode: self.mode,
@@ -467,32 +482,11 @@ impl<M: Measurement> Criterion<M> {
     #[must_use]
     /// Changes the internal profiler for benchmarks run with this runner. See
     /// the [`Profiler`] trait for more details.
-    pub fn with_profiler<P: Profiler + 'static>(self, p: P) -> Criterion<M> {
+    pub fn with_profiler<P: Profiler + 'static>(self, p: P) -> Self {
         Criterion {
             profiler: Box::new(RefCell::new(p)),
             ..self
         }
-    }
-
-    #[must_use]
-    /// Set the [plotting backend]. By default, Criterion will use `gnuplot` if available,
-    /// or `plotters` if not.
-    ///
-    /// Panics if `backend` is [`PlottingBackend::Gnuplot`] and `gnuplot` is not available.
-    ///
-    /// [plotting backend]: PlottingBackend
-    pub fn plotting_backend(mut self, backend: PlottingBackend) -> Criterion<M> {
-        if let PlottingBackend::Gnuplot = backend {
-            assert!(
-                !gnuplot_version().is_err(),
-                "Gnuplot plotting backend was requested, but gnuplot is not available. \
-                To continue, either install Gnuplot or allow Criterion.rs to fall back \
-                to using plotters."
-            );
-        }
-
-        self.report.html = backend.create_plotter().map(Html::new);
-        self
     }
 
     #[must_use]
@@ -506,7 +500,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if n < 10
-    pub fn sample_size(mut self, n: usize) -> Criterion<M> {
+    pub fn sample_size(mut self, n: usize) -> Self {
         assert!(n >= 10);
 
         self.config.sample_size = n;
@@ -519,7 +513,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the input duration is zero
-    pub fn warm_up_time(mut self, dur: Duration) -> Criterion<M> {
+    pub fn warm_up_time(mut self, dur: Duration) -> Self {
         assert!(dur.as_nanos() > 0);
 
         self.config.warm_up_time = dur;
@@ -537,7 +531,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the input duration in zero
-    pub fn measurement_time(mut self, dur: Duration) -> Criterion<M> {
+    pub fn measurement_time(mut self, dur: Duration) -> Self {
         assert!(dur.as_nanos() > 0);
 
         self.config.measurement_time = dur;
@@ -556,7 +550,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the number of resamples is set to zero
-    pub fn nresamples(mut self, n: usize) -> Criterion<M> {
+    pub fn nresamples(mut self, n: usize) -> Self {
         assert!(n > 0);
         if n <= 1000 {
             eprintln!("\nWarning: It is not recommended to reduce nresamples below 1000.");
@@ -579,7 +573,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the threshold is set to a negative value
-    pub fn noise_threshold(mut self, threshold: f64) -> Criterion<M> {
+    pub fn noise_threshold(mut self, threshold: f64) -> Self {
         assert!(threshold >= 0.0);
 
         self.config.noise_threshold = threshold;
@@ -595,7 +589,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the confidence level is set to a value outside the `(0, 1)` range
-    pub fn confidence_level(mut self, cl: f64) -> Criterion<M> {
+    pub fn confidence_level(mut self, cl: f64) -> Self {
         assert!(cl > 0.0 && cl < 1.0);
         if cl < 0.5 {
             eprintln!("\nWarning: It is not recommended to reduce confidence level below 0.5.");
@@ -626,7 +620,7 @@ impl<M: Measurement> Criterion<M> {
     /// # Panics
     ///
     /// Panics if the significance level is set to a value outside the `(0, 1)` range
-    pub fn significance_level(mut self, sl: f64) -> Criterion<M> {
+    pub fn significance_level(mut self, sl: f64) -> Self {
         assert!(sl > 0.0 && sl < 1.0);
 
         self.config.significance_level = sl;
@@ -634,30 +628,8 @@ impl<M: Measurement> Criterion<M> {
     }
 
     #[must_use]
-    /// Enables plotting
-    pub fn with_plots(mut self) -> Criterion<M> {
-        // If running under cargo-criterion then don't re-enable the reports; let it do the reporting.
-        if self.connection.is_none() && self.report.html.is_none() {
-            let default_backend = default_plotting_backend().create_plotter();
-            if let Some(backend) = default_backend {
-                self.report.html = Some(Html::new(backend));
-            } else {
-                panic!("Cannot find a default plotting backend!");
-            }
-        }
-        self
-    }
-
-    #[must_use]
-    /// Disables plotting
-    pub fn without_plots(mut self) -> Criterion<M> {
-        self.report.html = None;
-        self
-    }
-
-    #[must_use]
     /// Names an explicit baseline and enables overwriting the previous results.
-    pub fn save_baseline(mut self, baseline: String) -> Criterion<M> {
+    pub fn save_baseline(mut self, baseline: String) -> Self {
         self.baseline_directory = baseline;
         self.baseline = Baseline::Save;
         self
@@ -665,7 +637,7 @@ impl<M: Measurement> Criterion<M> {
 
     #[must_use]
     /// Names an explicit baseline and disables overwriting the previous results.
-    pub fn retain_baseline(mut self, baseline: String, strict: bool) -> Criterion<M> {
+    pub fn retain_baseline(mut self, baseline: String, strict: bool) -> Self {
         self.baseline_directory = baseline;
         self.baseline = if strict {
             Baseline::CompareStrict
@@ -680,7 +652,7 @@ impl<M: Measurement> Criterion<M> {
     /// given string will be executed.
     ///
     /// This overwrites [`Self::with_benchmark_filter`].
-    pub fn with_filter<S: Into<String>>(mut self, filter: S) -> Criterion<M> {
+    pub fn with_filter<S: Into<String>>(mut self, filter: S) -> Self {
         let filter_text = filter.into();
         let filter = Regex::new(&filter_text).unwrap_or_else(|err| {
             panic!(
@@ -696,24 +668,16 @@ impl<M: Measurement> Criterion<M> {
     /// Only run benchmarks specified by the given filter.
     ///
     /// This overwrites [`Self::with_filter`].
-    pub fn with_benchmark_filter(mut self, filter: BenchmarkFilter) -> Criterion<M> {
+    pub fn with_benchmark_filter(mut self, filter: BenchmarkFilter) -> Self {
         self.filter = filter;
 
-        self
-    }
-
-    #[must_use]
-    /// Override whether the CLI output will be colored or not. Usually you would use the `--color`
-    /// CLI argument, but this is available for programmmatic use as well.
-    pub fn with_output_color(mut self, enabled: bool) -> Criterion<M> {
-        self.report.cli.enable_text_coloring = enabled;
         self
     }
 
     /// Set the output directory (currently for testing only)
     #[must_use]
     #[doc(hidden)]
-    pub fn output_directory(mut self, path: &Path) -> Criterion<M> {
+    pub fn output_directory(mut self, path: &Path) -> Self {
         path.clone_into(&mut self.output_directory);
 
         self
@@ -722,7 +686,7 @@ impl<M: Measurement> Criterion<M> {
     /// Set the profile time (currently for testing only)
     #[must_use]
     #[doc(hidden)]
-    pub fn profile_time(mut self, profile_time: Option<Duration>) -> Criterion<M> {
+    pub fn profile_time(mut self, profile_time: Option<Duration>) -> Self {
         match profile_time {
             Some(time) => self.mode = Mode::Profile(time),
             None => self.mode = Mode::Benchmark,
@@ -746,11 +710,114 @@ impl<M: Measurement> Criterion<M> {
         self.report.final_summary(&report_context);
     }
 
+    fn filter_matches(&self, id: &str) -> bool {
+        match &self.filter {
+            BenchmarkFilter::AcceptAll => true,
+            BenchmarkFilter::Regex(regex) => regex.is_match(id),
+            BenchmarkFilter::Exact(exact) => id == exact,
+            BenchmarkFilter::RejectAll => false,
+        }
+    }
+
+    /// Returns true iff we should save the benchmark results in
+    /// json files on the local disk.
+    fn should_save_baseline(&self) -> bool {
+        self.connection.is_none()
+            && self.load_baseline.is_none()
+            && !matches!(self.baseline, Baseline::Discard)
+    }
+
+    /// Return a benchmark group. All benchmarks performed using a benchmark group will be
+    /// grouped together in the final report.
+    ///
+    /// # Examples:
+    ///
+    /// ```rust
+    /// use criterion::{criterion_group, criterion_main, Criterion};
+    ///
+    /// fn bench_simple(c: &mut Criterion) {
+    ///     let mut group = c.benchmark_group("My Group");
+    ///
+    ///     // Now we can perform benchmarks with this group
+    ///     group.bench_function("Bench 1", |b| b.iter(|| 1 ));
+    ///     group.bench_function("Bench 2", |b| b.iter(|| 2 ));
+    ///
+    ///     group.finish();
+    /// }
+    /// criterion_group!(benches, bench_simple);
+    /// criterion_main!(benches);
+    /// ```
+    /// # Panics:
+    /// Panics if the group name is empty
+    pub fn benchmark_group<S: Into<String>>(&mut self, group_name: S) -> BenchmarkGroup<'_, M, R> {
+        let group_name = group_name.into();
+        assert!(!group_name.is_empty(), "Group name must not be empty.");
+
+        if let Some(conn) = &self.connection {
+            conn.send(&OutgoingMessage::BeginningBenchmarkGroup { group: &group_name })
+                .unwrap();
+        }
+
+        BenchmarkGroup::new(self, group_name)
+    }
+}
+impl<M: Measurement> Criterion<M, Reports> {
+    #[must_use]
+    /// Set the [plotting backend]. By default, Criterion will use `gnuplot` if available,
+    /// or `plotters` if not.
+    ///
+    /// Panics if `backend` is [`PlottingBackend::Gnuplot`] and `gnuplot` is not available.
+    ///
+    /// [plotting backend]: PlottingBackend
+    pub fn plotting_backend(mut self, backend: PlottingBackend) -> Self{
+        if let PlottingBackend::Gnuplot = backend {
+            assert!(
+                !gnuplot_version().is_err(),
+                "Gnuplot plotting backend was requested, but gnuplot is not available. \
+                To continue, either install Gnuplot or allow Criterion.rs to fall back \
+                to using plotters."
+            );
+        }
+
+        self.report.html = backend.create_plotter().map(Html::new);
+        self
+    }
+
+    #[must_use]
+    /// Override whether the CLI output will be colored or not. Usually you would use the `--color`
+    /// CLI argument, but this is available for programmmatic use as well.
+    pub fn with_output_color(mut self, enabled: bool) -> Self {
+        self.report.cli.enable_text_coloring = enabled;
+        self
+    }
+
+    #[must_use]
+    /// Enables plotting
+    pub fn with_plots(mut self) -> Self {
+        // If running under cargo-criterion then don't re-enable the reports; let it do the reporting.
+        if self.connection.is_none() && self.report.html.is_none() {
+            let default_backend = default_plotting_backend().create_plotter();
+            if let Some(backend) = default_backend {
+                self.report.html = Some(Html::new(backend));
+            } else {
+                panic!("Cannot find a default plotting backend!");
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    /// Disables plotting
+    pub fn without_plots(mut self) -> Self {
+        self.report.html = None;
+        self
+    }
+
     /// Configure this criterion struct based on the command-line arguments to
     /// this process.
     #[must_use]
     #[allow(clippy::cognitive_complexity)]
-    pub fn configure_from_args(mut self) -> Criterion<M> {
+    pub fn configure_from_args(mut self) -> Self {
         use clap::{value_parser, Arg, Command};
         let matches = Command::new("Criterion Benchmark")
             .arg(Arg::new("FILTER")
@@ -1123,61 +1190,13 @@ https://bheisler.github.io/criterion.rs/book/faq.html
 
         self
     }
-
-    fn filter_matches(&self, id: &str) -> bool {
-        match &self.filter {
-            BenchmarkFilter::AcceptAll => true,
-            BenchmarkFilter::Regex(regex) => regex.is_match(id),
-            BenchmarkFilter::Exact(exact) => id == exact,
-            BenchmarkFilter::RejectAll => false,
-        }
-    }
-
-    /// Returns true iff we should save the benchmark results in
-    /// json files on the local disk.
-    fn should_save_baseline(&self) -> bool {
-        self.connection.is_none()
-            && self.load_baseline.is_none()
-            && !matches!(self.baseline, Baseline::Discard)
-    }
-
-    /// Return a benchmark group. All benchmarks performed using a benchmark group will be
-    /// grouped together in the final report.
-    ///
-    /// # Examples:
-    ///
-    /// ```rust
-    /// use criterion::{criterion_group, criterion_main, Criterion};
-    ///
-    /// fn bench_simple(c: &mut Criterion) {
-    ///     let mut group = c.benchmark_group("My Group");
-    ///
-    ///     // Now we can perform benchmarks with this group
-    ///     group.bench_function("Bench 1", |b| b.iter(|| 1 ));
-    ///     group.bench_function("Bench 2", |b| b.iter(|| 2 ));
-    ///
-    ///     group.finish();
-    /// }
-    /// criterion_group!(benches, bench_simple);
-    /// criterion_main!(benches);
-    /// ```
-    /// # Panics:
-    /// Panics if the group name is empty
-    pub fn benchmark_group<S: Into<String>>(&mut self, group_name: S) -> BenchmarkGroup<'_, M> {
-        let group_name = group_name.into();
-        assert!(!group_name.is_empty(), "Group name must not be empty.");
-
-        if let Some(conn) = &self.connection {
-            conn.send(&OutgoingMessage::BeginningBenchmarkGroup { group: &group_name })
-                .unwrap();
-        }
-
-        BenchmarkGroup::new(self, group_name)
-    }
 }
-impl<M> Criterion<M>
+
+
+impl<M, R> Criterion<M, R>
 where
     M: Measurement + 'static,
+    R: Report + 'static,
 {
     /// Benchmarks a function. For comparing multiple functions, see
     /// [`benchmark_group`](Self::benchmark_group).
@@ -1200,7 +1219,7 @@ where
     /// criterion_group!(benches, bench);
     /// criterion_main!(benches);
     /// ```
-    pub fn bench_function<F>(&mut self, id: &str, f: F) -> &mut Criterion<M>
+    pub fn bench_function<F>(&mut self, id: &str, f: F) -> &mut Criterion<M, R>
     where
         F: FnMut(&mut Bencher<'_, M>),
     {
@@ -1231,7 +1250,7 @@ where
     /// criterion_group!(benches, bench);
     /// criterion_main!(benches);
     /// ```
-    pub fn bench_with_input<F, I>(&mut self, id: BenchmarkId, input: &I, f: F) -> &mut Criterion<M>
+    pub fn bench_with_input<F, I>(&mut self, id: BenchmarkId, input: &I, f: F) -> &mut Criterion<M, R>
     where
         F: FnMut(&mut Bencher<'_, M>, &I),
     {
@@ -1502,5 +1521,5 @@ pub fn runner(benches: &[&dyn Fn()]) {
     for bench in benches {
         bench();
     }
-    Criterion::default().configure_from_args().final_summary();
+    Criterion::<WallTime, Reports>::default().configure_from_args().final_summary();
 }

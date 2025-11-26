@@ -60,7 +60,18 @@ impl<W: Write> CsvReportWriter<W> {
     }
 }
 
-pub struct FileCsvReport;
+pub struct FileCsvReport{
+    enabled: bool
+}
+
+impl Default for FileCsvReport {
+    fn default() -> Self {
+        FileCsvReport{
+            enabled: true
+        }
+    }
+}
+
 impl FileCsvReport {
     fn write_file(
         &self,
@@ -84,10 +95,16 @@ impl Report for FileCsvReport {
         measurements: &MeasurementData<'_>,
         formatter: &dyn ValueFormatter,
     ) {
-        let mut path = context.output_directory.clone();
-        path.push(id.as_directory_name());
-        path.push("new");
-        path.push("raw.csv");
-        log_if_err!(self.write_file(&path, id, measurements, formatter));
+        if(self.enabled) {
+            let mut path = context.output_directory.clone();
+            path.push(id.as_directory_name());
+            path.push("new");
+            path.push("raw.csv");
+            log_if_err!(self.write_file(&path, id, measurements, formatter));
+        }
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
     }
 }

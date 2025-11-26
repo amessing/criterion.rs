@@ -9,7 +9,7 @@ use crate::format;
 use crate::measurement::ValueFormatter;
 use crate::stats::univariate::Sample;
 use crate::stats::Distribution;
-use crate::{PlotConfiguration, Throughput};
+use crate::{PlotConfiguration, Throughput, default_plotting_backend};
 use anes::{Attribute, ClearLine, Color, ResetAttributes, SetAttribute, SetForegroundColor};
 use serde::{Deserialize, Serialize};
 use std::cmp;
@@ -36,7 +36,7 @@ pub(crate) struct ComparisonData {
     pub base_estimates: Estimates,
 }
 
-pub(crate) struct MeasurementData<'a> {
+pub struct MeasurementData<'a> {
     pub data: Data<'a, f64, f64>,
     pub avg_times: LabeledSample<'a, f64>,
     pub absolute_estimates: Estimates,
@@ -271,7 +271,7 @@ impl ReportContext {
     }
 }
 
-pub(crate) trait Report {
+pub trait Report {
     fn test_start(&self, _id: &BenchmarkId, _context: &ReportContext) {}
     fn test_pass(&self, _id: &BenchmarkId, _context: &ReportContext) {}
 
@@ -306,6 +306,8 @@ pub(crate) trait Report {
     }
     fn final_summary(&self, _context: &ReportContext) {}
     fn group_separator(&self) {}
+
+    fn disable(&mut self);
 }
 
 pub(crate) struct Reports {
@@ -316,6 +318,20 @@ pub(crate) struct Reports {
     pub(crate) csv_enabled: bool,
     pub(crate) html: Option<Html>,
 }
+impl Default for Reports {
+    fn default() -> Self {
+        Reports {
+            cli_enabled: true,
+            cli: CliReport::new(false, false, CliVerbosity::Normal),
+            bencher_enabled: false,
+            bencher: BencherReport::default(),
+            html: default_plotting_backend().create_plotter().map(Html::new),
+            csv_enabled: cfg!(feature = "csv_output"),
+        }
+    }
+}
+
+
 macro_rules! reports_impl {
     (fn $name:ident(&self, $($argn:ident: $argt:ty),*)) => {
         fn $name(&self, $($argn: $argt),* ) {
@@ -327,7 +343,7 @@ macro_rules! reports_impl {
             }
             #[cfg(feature = "csv_output")]
             if self.csv_enabled {
-                FileCsvReport.$name($($argn),*);
+                FileCsvReport::default().$name($($argn),*);
             }
             if let Some(reporter) = &self.html {
                 reporter.$name($($argn),*);
@@ -370,6 +386,15 @@ impl Report for Reports {
 
     reports_impl!(fn final_summary(&self, context: &ReportContext));
     reports_impl!(fn group_separator(&self, ));
+
+    fn disable(&mut self) {
+        self.cli_enabled = false;
+        self.cli.disable();
+        self.bencher_enabled = false;
+        self.bencher.disable();
+        self.csv_enabled = false;
+        self.html = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -383,6 +408,7 @@ pub(crate) struct CliReport {
     pub enable_text_overwrite: bool,
     pub enable_text_coloring: bool,
     pub verbosity: CliVerbosity,
+    enabled: bool
 }
 impl CliReport {
     pub fn new(
@@ -394,6 +420,7 @@ impl CliReport {
             enable_text_overwrite,
             enable_text_coloring,
             verbosity,
+            enabled: true
         }
     }
 
@@ -485,17 +512,26 @@ impl CliReport {
 }
 impl Report for CliReport {
     fn test_start(&self, id: &BenchmarkId, _: &ReportContext) {
+        if self.enabled {
         println!("Testing {}", id);
+        }
     }
     fn test_pass(&self, _: &BenchmarkId, _: &ReportContext) {
+        if self.enabled {
         println!("Success");
+        }
     }
 
     fn benchmark_start(&self, id: &BenchmarkId, _: &ReportContext) {
+        if self.enabled {
         self.print_overwritable(format!("Benchmarking {}", id));
+        }
     }
 
     fn profile(&self, id: &BenchmarkId, _: &ReportContext, warmup_ns: f64) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
         self.print_overwritable(format!(
             "Benchmarking {}: Profiling for {}",
@@ -505,6 +541,9 @@ impl Report for CliReport {
     }
 
     fn warmup(&self, id: &BenchmarkId, _: &ReportContext, warmup_ns: f64) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
         self.print_overwritable(format!(
             "Benchmarking {}: Warming up for {}",
@@ -514,11 +553,17 @@ impl Report for CliReport {
     }
 
     fn terminated(&self, id: &BenchmarkId, _: &ReportContext) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
         println!("Benchmarking {}: Complete (Analysis Disabled)", id);
     }
 
     fn analysis(&self, id: &BenchmarkId, _: &ReportContext) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
         self.print_overwritable(format!("Benchmarking {}: Analyzing", id));
     }
@@ -531,6 +576,9 @@ impl Report for CliReport {
         estimate_ns: f64,
         iter_count: u64,
     ) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
         let iter_string = if matches!(self.verbosity, CliVerbosity::Verbose) {
             format!("{} iterations", iter_count)
@@ -554,6 +602,9 @@ impl Report for CliReport {
         meas: &MeasurementData<'_>,
         formatter: &dyn ValueFormatter,
     ) {
+        if !self.enabled {
+            return;
+        }
         self.text_overwrite();
 
         let typical_estimate = &meas.absolute_estimates.typical();
@@ -731,11 +782,28 @@ impl Report for CliReport {
     }
 
     fn group_separator(&self) {
+        if self.enabled {
         println!();
+        }
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
     }
 }
 
-pub struct BencherReport;
+pub struct BencherReport {
+    enabled: bool
+}
+
+impl Default for BencherReport {
+    fn default() -> Self {
+        Self {
+            enabled: true
+        }
+    }
+}
+
 impl Report for BencherReport {
     fn measurement_start(
         &self,
@@ -745,7 +813,9 @@ impl Report for BencherReport {
         _estimate_ns: f64,
         _iter_count: u64,
     ) {
-        print!("test {} ... ", id);
+        if self.enabled {
+            print!("test {} ... ", id);
+        }
     }
 
     fn measurement_complete(
@@ -755,6 +825,9 @@ impl Report for BencherReport {
         meas: &MeasurementData<'_>,
         formatter: &dyn ValueFormatter,
     ) {
+        if !self.enabled {
+            return;
+        }
         let mut values = [
             meas.absolute_estimates.median.point_estimate,
             meas.absolute_estimates.std_dev.point_estimate,
@@ -770,7 +843,13 @@ impl Report for BencherReport {
     }
 
     fn group_separator(&self) {
+        if self.enabled {
         println!();
+        }
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
     }
 }
 

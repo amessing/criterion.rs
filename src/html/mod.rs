@@ -271,6 +271,7 @@ struct IndexContext<'a> {
 pub struct Html {
     templates: TinyTemplate<'static>,
     plotter: RefCell<Box<dyn Plotter>>,
+    enabled: bool
 }
 impl Html {
     pub(crate) fn new(plotter: Box<dyn Plotter>) -> Html {
@@ -289,7 +290,7 @@ impl Html {
             .expect("Unable to parse summary_report template");
 
         let plotter = RefCell::new(plotter);
-        Html { templates, plotter }
+        Html { templates, plotter, enabled: true }
     }
 }
 impl Report for Html {
@@ -300,6 +301,10 @@ impl Report for Html {
         measurements: &MeasurementData<'_>,
         formatter: &dyn ValueFormatter,
     ) {
+        if !self.enabled {
+            return;
+        }
+
         try_else_return!({
             let mut report_dir = report_context.output_directory.clone();
             report_dir.push(id.as_directory_name());
@@ -406,6 +411,10 @@ impl Report for Html {
         all_ids: &[BenchmarkId],
         formatter: &dyn ValueFormatter,
     ) {
+        if !self.enabled {
+            return;
+        }
+
         let all_ids = all_ids
             .iter()
             .filter(|id| {
@@ -519,6 +528,10 @@ impl Report for Html {
     }
 
     fn final_summary(&self, report_context: &ReportContext) {
+        if !self.enabled {
+            return;
+        }
+
         let output_directory = &report_context.output_directory;
         if !fs::is_dir(&output_directory) {
             return;
@@ -552,6 +565,10 @@ impl Report for Html {
             .render("index", &context)
             .expect("Failed to render index template");
         try_else_return!(fs::save_string(&text, &report_path,));
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
     }
 }
 impl Html {

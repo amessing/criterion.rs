@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 /// PRIVATE
-pub(crate) trait Routine<M: Measurement, T: ?Sized> {
+pub(crate) trait Routine<M: Measurement, R: Report, T: ?Sized> {
     /// PRIVATE
     fn bench(&mut self, m: &M, iters: &[u64], parameter: &T) -> Vec<f64>;
     /// PRIVATE
@@ -28,7 +28,7 @@ pub(crate) trait Routine<M: Measurement, T: ?Sized> {
         &mut self,
         measurement: &M,
         id: &BenchmarkId,
-        criterion: &Criterion<M>,
+        criterion: &Criterion<M, R>,
         report_context: &ReportContext,
         time: Duration,
         parameter: &T,
@@ -85,7 +85,7 @@ pub(crate) trait Routine<M: Measurement, T: ?Sized> {
         measurement: &M,
         id: &BenchmarkId,
         config: &BenchmarkConfig,
-        criterion: &Criterion<M>,
+        criterion: &Criterion<M, R>,
         report_context: &ReportContext,
         parameter: &T,
     ) -> (ActualSamplingMode, Box<[f64]>, Box<[f64]>) {
@@ -204,7 +204,7 @@ pub(crate) trait Routine<M: Measurement, T: ?Sized> {
     }
 }
 
-pub struct Function<M: Measurement, F, T>
+pub struct Function<M: Measurement, R: Report, F, T>
 where
     F: FnMut(&mut Bencher<'_, M>, &T),
     T: ?Sized,
@@ -212,23 +212,25 @@ where
     f: F,
     // TODO: Is there some way to remove these?
     _phantom: PhantomData<T>,
-    _phamtom2: PhantomData<M>,
+    _phantom2: PhantomData<M>,
+    _phantom3: PhantomData<R>,
 }
-impl<M: Measurement, F, T> Function<M, F, T>
+impl<M: Measurement, R: Report, F, T> Function<M, R, F, T>
 where
     F: FnMut(&mut Bencher<'_, M>, &T),
     T: ?Sized,
 {
-    pub fn new(f: F) -> Function<M, F, T> {
+    pub fn new(f: F) -> Function<M, R, F, T> {
         Function {
             f,
             _phantom: PhantomData,
-            _phamtom2: PhantomData,
+            _phantom2: PhantomData,
+            _phantom3: PhantomData
         }
     }
 }
 
-impl<M: Measurement, F, T> Routine<M, T> for Function<M, F, T>
+impl<M: Measurement, R: Report, F, T> Routine<M, R, T> for Function<M, R, F, T>
 where
     F: FnMut(&mut Bencher<'_, M>, &T),
     T: ?Sized,

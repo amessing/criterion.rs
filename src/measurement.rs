@@ -100,7 +100,7 @@ pub trait Measurement {
     fn formatter(&self) -> &dyn ValueFormatter;
 }
 
-pub(crate) struct DurationFormatter;
+pub struct DurationFormatter;
 impl DurationFormatter {
     fn bytes_per_second(&self, bytes: f64, typical: f64, values: &mut [f64]) -> &'static str {
         let bytes_per_second = bytes * (1e9 / typical);
@@ -232,6 +232,7 @@ impl ValueFormatter for DurationFormatter {
 
 /// `WallTime` is the default measurement in Criterion.rs. It measures the elapsed time from the
 /// beginning of a series of iterations to the end.
+#[derive(Default)]
 pub struct WallTime;
 impl Measurement for WallTime {
     type Intermediate = Instant;

@@ -74,15 +74,15 @@ use std::time::Duration;
 /// criterion_group!(benches, bench_simple, bench_nested, bench_throughput);
 /// criterion_main!(benches);
 /// ```
-pub struct BenchmarkGroup<'a, M: Measurement> {
-    criterion: &'a mut Criterion<M>,
+pub struct BenchmarkGroup<'a, M: Measurement, R: Report> {
+    criterion: &'a mut Criterion<M, R>,
     group_name: String,
     all_ids: Vec<InternalBenchmarkId>,
     any_matched: bool,
     partial_config: PartialBenchmarkConfig,
     throughput: Option<Throughput>,
 }
-impl<'a, M: Measurement> BenchmarkGroup<'a, M> {
+impl<'a, M: Measurement, R: Report> BenchmarkGroup<'a, M, R> {
     /// Changes the size of the sample for this benchmark
     ///
     /// A bigger sample should yield more accurate results if paired with a sufficiently large
@@ -234,7 +234,7 @@ impl<'a, M: Measurement> BenchmarkGroup<'a, M> {
         self
     }
 
-    pub(crate) fn new(criterion: &mut Criterion<M>, group_name: String) -> BenchmarkGroup<'_, M> {
+    pub(crate) fn new(criterion: &'a mut Criterion<M, R>, group_name: String) -> Self {
         BenchmarkGroup {
             criterion,
             group_name,
@@ -365,7 +365,7 @@ impl<'a, M: Measurement> BenchmarkGroup<'a, M> {
         ::std::mem::drop(self);
     }
 }
-impl<'a, M: Measurement> Drop for BenchmarkGroup<'a, M> {
+impl<'a, M: Measurement, R: Report> Drop for BenchmarkGroup<'a, M, R> {
     fn drop(&mut self) {
         // I don't really like having a bunch of non-trivial code in drop, but this is the only way
         // to really write linear types like this in Rust...

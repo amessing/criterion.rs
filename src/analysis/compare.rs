@@ -8,16 +8,16 @@ use crate::estimate::{
     build_change_estimates, ChangeDistributions, ChangeEstimates, ChangePointEstimates, Estimates,
 };
 use crate::measurement::Measurement;
-use crate::report::BenchmarkId;
+use crate::report::{BenchmarkId, Report};
 use crate::{fs, Criterion, SavedSample};
 
 // Common comparison procedure
 #[allow(clippy::type_complexity)]
-pub(crate) fn common<M: Measurement>(
+pub(crate) fn common<M: Measurement, R: Report>(
     id: &BenchmarkId,
     avg_times: &Sample<f64>,
     config: &BenchmarkConfig,
-    criterion: &Criterion<M>,
+    criterion: &Criterion<M, R>,
 ) -> Result<(
     f64,
     Distribution<f64>,
@@ -98,12 +98,12 @@ fn t_test(
 }
 
 // Estimates the relative change in the statistics of the population
-fn estimates<M: Measurement>(
+fn estimates<M: Measurement, R: Report>(
     id: &BenchmarkId,
     avg_times: &Sample<f64>,
     base_avg_times: &Sample<f64>,
     config: &BenchmarkConfig,
-    criterion: &Criterion<M>,
+    criterion: &Criterion<M, R>,
 ) -> (ChangeEstimates, ChangeDistributions) {
     fn stats(a: &Sample<f64>, b: &Sample<f64>) -> (f64, f64) {
         (
